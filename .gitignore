@@ -2,3 +2,6 @@ Model/st_ai_output/
 Model/st_ai_ws/
 Model/*.xSPI2.bin
 Model/*.hex
+STM32CubeIDE/**/Debug/
+STM32CubeIDE/**/Release/
+STM32CubeIDE/**/.settings/stm32cubeide.project.prefs
