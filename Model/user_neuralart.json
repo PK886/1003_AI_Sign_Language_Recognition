@@ -1,0 +1,14 @@
+{
+    "Globals": {
+    },
+    "Profiles": {
+        "palm_detection": {
+            "memory_pool": "./my_mpools/palm_detection.mpool",
+            "options" : "--enable-epoch-controller --all-buffers-info --no-hw-sw-parallelism --cache-maintenance --enable-virtual-mem-pools --native-float --optimization 3 --Os --Omax-ca-pipe 4 --Ocache-opt"
+        },
+        "hand_landmarks": {
+            "memory_pool": "./my_mpools/hand_landmarks.mpool",
+            "options" : "--enable-epoch-controller --all-buffers-info --no-hw-sw-parallelism --cache-maintenance --enable-virtual-mem-pools --native-float --optimization 3 --Os --Omax-ca-pipe 4 --Ocache-opt"
+        }
+    }
+}
