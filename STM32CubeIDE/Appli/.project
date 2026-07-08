@@ -251,9 +251,19 @@
 			<locationURI>PARENT-2-PROJECT_LOC/Appli/Core/Src/app_cpuload.c</locationURI>
 		</link>
 		<link>
+			<name>Application/User/Core/app_key.c</name>
+			<type>1</type>
+			<locationURI>PARENT-2-PROJECT_LOC/Appli/Core/Src/app_key.c</locationURI>
+		</link>
+		<link>
 			<name>Application/User/Core/app_lcd.c</name>
 			<type>1</type>
 			<locationURI>PARENT-2-PROJECT_LOC/Appli/Core/Src/app_lcd.c</locationURI>
+		</link>
+		<link>
+			<name>Application/User/Core/app_phrase_bank.c</name>
+			<type>1</type>
+			<locationURI>PARENT-2-PROJECT_LOC/Appli/Core/Src/app_phrase_bank.c</locationURI>
 		</link>
 		<link>
 			<name>Application/User/Core/app_postprocess.c</name>

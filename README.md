@@ -43,7 +43,42 @@ User-defined gesture recording:
 - `app_sign_user_record_commit()`
 - `app_sign_user_record_cancel()`
 
-The current user-recording implementation is an API placeholder. It accepts samples and tracks recording state, but does not yet persist or match custom templates.
+The current user-recording implementation stores RAM templates and matches custom static gestures. Flash/SD persistence is reserved for a later version.
+
+## User Recording Menu
+
+This version adds a board-key driven recording flow inspired by the PC-side recorder project:
+
+| Key | Action |
+| --- | --- |
+| KEY0 | Toggle recognize/menu, cancel current recording |
+| KEY1 | Next phrase |
+| KEY2 | Previous phrase |
+| WK_UP | Start recording / confirm save |
+
+The first menu contains 10 phrases:
+
+1. Hello
+2. Thank you
+3. Yes
+4. No
+5. Help me
+6. Water please
+7. I am hungry
+8. Stop
+9. OK
+10. Call family
+
+Recording flow:
+
+1. Press KEY0 to enter the phrase menu.
+2. Use KEY1/KEY2 to select a phrase.
+3. Press WK_UP to enter recording mode.
+4. Hold a custom static gesture in front of the camera.
+5. After at least 12 stable landmark samples are collected, press WK_UP again to save.
+6. The system returns to recognize mode and matches the saved gesture template to the selected phrase.
+
+The current template store is RAM-only and supports 10 custom static gestures, one per phrase slot. It does not persist across reset yet. Static template matching normalizes the 21 hand landmarks by wrist origin and palm scale, then compares the current frame against saved averages.
 
 ## Board Notes
 

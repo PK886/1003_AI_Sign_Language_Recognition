@@ -26,6 +26,8 @@
 #include "app_bqueue.h"
 #include "app_cpuload.h"
 #include "app_postprocess.h"
+#include "app_key.h"
+#include "app_phrase_bank.h"
 #include "app_sign.h"
 #include "app_voice.h"
 #include "ld.h"
@@ -49,6 +51,12 @@ typedef struct {
     ld_point_t ld_landmarks[LD_LANDMARKS_NB];
 } app_hand_info_t;
 
+typedef enum {
+    APP_UI_MODE_RECOGNIZE = 0,
+    APP_UI_MODE_PHRASE_MENU,
+    APP_UI_MODE_RECORDING,
+} app_ui_mode_t;
+
 typedef struct {
     float nn_period_ms;
     uint32_t pd_ms;
@@ -59,7 +67,11 @@ typedef struct {
     float pd_max_prob;
     app_sign_result_t sign;
     app_sign_type_t last_sign;
+    app_ui_mode_t ui_mode;
+    uint8_t selected_phrase;
+    const char *last_output_text;
     uint32_t sign_count;
+    uint32_t template_count;
     uint8_t voice_ready;
     app_hand_info_t hands[PD_MAX_HAND_NB];
 } app_display_info_t;
@@ -152,6 +164,7 @@ void app_run(void)
     app_lcd_init();
     app_bqueue_init(&nn_input_queue, 2, (uint8_t *[2]){nn_input_buffers[0], nn_input_buffers[1]});
     app_cpuload_init(&cpuload);
+    app_key_init();
     app_voice_init();
     app_camera_init(app_camera_display_pipe_vsync_cb, app_camera_display_pipe_frame_cb, NULL, app_camera_nn_pipe_frame_cb);
 
@@ -212,7 +225,11 @@ static VOID nn_thread_entry(ULONG id)
     app_sign_state_t sign_state;
     app_sign_result_t sign_result;
     app_sign_type_t last_sign = APP_SIGN_NONE;
+    app_ui_mode_t ui_mode = APP_UI_MODE_RECOGNIZE;
+    uint8_t selected_phrase = 0U;
+    const char *last_output_text = "---";
     uint32_t sign_count = 0U;
+    uint8_t key_events;
     uint8_t j;
 
     app_palm_detection_init(&pd_info);
@@ -235,6 +252,56 @@ static VOID nn_thread_entry(ULONG id)
         nn_period[1] = HAL_GetTick();
         nn_period_ms = nn_period[1] - nn_period[0];
         nn_period_filtered_ms = (15 * nn_period_filtered_ms + nn_period_ms) / 16;
+        key_events = app_key_update(nn_period[1]);
+
+        if ((key_events & APP_KEY_EVENT_MODE) != 0U)
+        {
+            if (ui_mode == APP_UI_MODE_RECORDING)
+            {
+                app_sign_user_record_cancel();
+                ui_mode = APP_UI_MODE_PHRASE_MENU;
+            }
+            else if (ui_mode == APP_UI_MODE_PHRASE_MENU)
+            {
+                ui_mode = APP_UI_MODE_RECOGNIZE;
+                app_sign_reset(&sign_state);
+            }
+            else
+            {
+                ui_mode = APP_UI_MODE_PHRASE_MENU;
+                app_sign_reset(&sign_state);
+            }
+        }
+
+        if (ui_mode == APP_UI_MODE_PHRASE_MENU)
+        {
+            if ((key_events & APP_KEY_EVENT_NEXT) != 0U)
+            {
+                selected_phrase = app_phrase_bank_next(selected_phrase);
+            }
+            if ((key_events & APP_KEY_EVENT_PREV) != 0U)
+            {
+                selected_phrase = app_phrase_bank_prev(selected_phrase);
+            }
+            if ((key_events & APP_KEY_EVENT_OK) != 0U)
+            {
+                if (app_sign_user_record_begin(selected_phrase,
+                                               app_phrase_bank_text(selected_phrase)) == APP_SIGN_RECORD_OK)
+                {
+                    ui_mode = APP_UI_MODE_RECORDING;
+                    app_sign_reset(&sign_state);
+                }
+            }
+        }
+        else if ((ui_mode == APP_UI_MODE_RECORDING) &&
+                 ((key_events & APP_KEY_EVENT_OK) != 0U))
+        {
+            if (app_sign_user_record_commit() == APP_SIGN_RECORD_OK)
+            {
+                ui_mode = APP_UI_MODE_RECOGNIZE;
+                app_sign_reset(&sign_state);
+            }
+        }
 
         capture_buffer = app_bqueue_get_ready(&nn_input_queue);
         idx_for_resize = frame_event_nb_for_resize % DISPLAY_BUFFER_NB;
@@ -265,10 +332,33 @@ static VOID nn_thread_entry(ULONG id)
                 {
                     app_decode_ld_landmarks(&app_pd_rois[0], &ld_landmarks[0][j], &sign_landmarks[j]);
                 }
-                sign_result = app_sign_update(&sign_state, sign_landmarks, HAL_GetTick());
-                if (sign_result.emitted_sign != APP_SIGN_NONE)
+
+                if (ui_mode == APP_UI_MODE_RECORDING)
+                {
+                    (void)app_sign_user_record_sample(sign_landmarks);
+                    sign_result = (app_sign_result_t){0};
+                    sign_result.current_text = app_phrase_bank_text(selected_phrase);
+                    sign_result.emitted_text = app_sign_text(APP_SIGN_NONE);
+                    sign_result.custom_recording = app_sign_user_record_is_active();
+                    sign_result.custom_sample_count = app_sign_user_record_sample_count();
+                }
+                else if (ui_mode == APP_UI_MODE_RECOGNIZE)
+                {
+                    sign_result = app_sign_update(&sign_state, sign_landmarks, HAL_GetTick());
+                }
+                else
+                {
+                    sign_result = (app_sign_result_t){0};
+                    sign_result.current_text = app_phrase_bank_text(selected_phrase);
+                    sign_result.emitted_text = app_sign_text(APP_SIGN_NONE);
+                    sign_result.custom_recording = app_sign_user_record_is_active();
+                    sign_result.custom_sample_count = app_sign_user_record_sample_count();
+                }
+
+                if (sign_result.emitted_valid != 0U)
                 {
                     last_sign = sign_result.emitted_sign;
+                    last_output_text = sign_result.emitted_text;
                     sign_count++;
                     (void)app_voice_say_text(sign_result.emitted_text);
                 }
@@ -280,8 +370,12 @@ static VOID nn_thread_entry(ULONG id)
             hl_ms = 0;
             app_sign_reset(&sign_state);
             sign_result = (app_sign_result_t){0};
-            sign_result.current_text = app_sign_text(APP_SIGN_NONE);
+            sign_result.current_text = (ui_mode == APP_UI_MODE_RECOGNIZE) ?
+                                       app_sign_text(APP_SIGN_NONE) :
+                                       app_phrase_bank_text(selected_phrase);
             sign_result.emitted_text = app_sign_text(APP_SIGN_NONE);
+            sign_result.custom_recording = app_sign_user_record_is_active();
+            sign_result.custom_sample_count = app_sign_user_record_sample_count();
         }
         ld_filtered_ms = (7 * ld_filtered_ms + hl_ms) / 8;
     
@@ -293,7 +387,11 @@ static VOID nn_thread_entry(ULONG id)
         display.info.pd_max_prob = pd_info.pd_out.pOutData[0].prob;
         display.info.sign = sign_result;
         display.info.last_sign = last_sign;
+        display.info.ui_mode = ui_mode;
+        display.info.selected_phrase = selected_phrase;
+        display.info.last_output_text = last_output_text;
         display.info.sign_count = sign_count;
+        display.info.template_count = app_sign_user_template_count();
         display.info.voice_ready = app_voice_is_ready();
         display.info.hands[0].is_valid = is_tracking;
         app_copy_pd_box(&display.info.hands[0].pd_hands, &pd_info.pd_out.pOutData[0]);
@@ -420,34 +518,64 @@ static void app_display_network_output(app_display_info_t *display_info)
     UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "CPU load");
     line_nb += 1;
     UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "%.1f%%", cpuload_one_second);
-    line_nb += 2;
+    line_nb += 1;
     UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Inference");
     line_nb += 1;
     UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "pd %2ums", display_info->pd_ms);
     line_nb += 1;
     UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "hl %2ums", display_info->hl_ms);
-    line_nb += 2;
+    line_nb += 1;
     UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "FPS");
     line_nb += 1;
     UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "%.1f", 1000.0 / display_info->nn_period_ms);
-    line_nb += 2;
+    line_nb += 1;
+    UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Mode");
+    line_nb += 1;
+    if (display_info->ui_mode == APP_UI_MODE_RECORDING)
+    {
+        UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Record");
+    }
+    else if (display_info->ui_mode == APP_UI_MODE_PHRASE_MENU)
+    {
+        UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Phrase Menu");
+    }
+    else
+    {
+        UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Recognize");
+    }
+    line_nb += 1;
     UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Sign Text");
     line_nb += 1;
     UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "%s", display_info->sign.current_text);
-    line_nb += 2;
+    line_nb += 1;
     UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Last Output");
     line_nb += 1;
-    UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "%s", app_sign_text(display_info->last_sign));
+    UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "%s", display_info->last_output_text);
     line_nb += 1;
     UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Count %lu", (unsigned long)display_info->sign_count);
-    line_nb += 2;
+    line_nb += 1;
+    UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Phrase %u/%u",
+                        (unsigned int)(display_info->selected_phrase + 1U),
+                        (unsigned int)APP_PHRASE_BANK_COUNT);
+    line_nb += 1;
+    UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "%s",
+                        app_phrase_bank_text(display_info->selected_phrase));
+    line_nb += 1;
+    UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Slot %s",
+                        app_sign_user_slot_is_used(display_info->selected_phrase) ? "Saved" : "Empty");
+    line_nb += 1;
+    UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Samples %lu/%u",
+                        (unsigned long)display_info->sign.custom_sample_count,
+                        (unsigned int)APP_SIGN_RECORD_MIN_SAMPLES);
+    line_nb += 1;
+    UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Templates %lu/%u",
+                        (unsigned long)display_info->template_count,
+                        (unsigned int)APP_SIGN_CUSTOM_SLOT_NB);
+    line_nb += 1;
     UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Voice %s",
                         display_info->voice_ready ? "Ready" : "Reserved");
     line_nb += 1;
-    UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "User Rec API");
-    line_nb += 1;
-    UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "%s",
-                        display_info->sign.custom_recording ? "Recording" : "Ready");
+    UTIL_LCDEx_PrintfAt(0, LINE(line_nb), RIGHT_MODE, "Keys K0/K1/K2/WK");
     line_nb += 1;
 
     for (i = 0; i < display_info->pd_hand_nb; i++)
